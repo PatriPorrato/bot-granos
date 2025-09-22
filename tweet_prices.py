@@ -19,7 +19,7 @@ RET = {
 SHOW_DOLLARS = [s.strip() for s in os.getenv("SHOW_DOLLARS", "oficial,mep").split(",") if s.strip()]
 
 # DRY_RUN=1 imprime el tweet y NO postea (úsalo en la primera corrida)
-DRY_RUN = os.getenv("DRY_RUN", "1") == "1"
+DRY_RUN = os.getenv("DRY_RUN", "0") == "0"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bot-granos/1.0 (+github actions)"}
 
@@ -172,6 +172,7 @@ def build_tweet():
 # X (Twitter)
 # =========================
 def post_to_x(text):
+    # X API v2 (tweepy.Client) con OAuth 1.0a user context
     key = os.getenv("X_API_KEY")
     secret = os.getenv("X_API_SECRET")
     token = os.getenv("X_ACCESS_TOKEN")
@@ -182,21 +183,22 @@ def post_to_x(text):
     }.items() if not v]
     if missing:
         print("ERROR_SECRETS_FALTAN:", ", ".join(missing))
-        return False, "Faltan secrets de X (Settings > Secrets > Actions)."
-
-    auth = tweepy.OAuth1UserHandler(key, secret, token, token_secret)
-    api = tweepy.API(auth)
+        return False, "Faltan secrets de X."
 
     try:
-        api.verify_credentials()
-    except Exception as e:
-        return False, f"ERROR_TWITTER_VERIFY: {e}"
-
-    try:
-        api.update_status(status=text)
+        client = tweepy.Client(
+            consumer_key=key,
+            consumer_secret=secret,
+            access_token=token,
+            access_token_secret=token_secret
+        )
+        resp = client.create_tweet(text=text)
+        print("X_V2_RESP:", resp)
         return True, "OK"
     except Exception as e:
-        return False, f"ERROR_TWITTER_POST: {e}"
+        # Pista típica: 403/453 = falta permiso de escritura o tier incompatible
+        return False, f"ERROR_TWITTER_V2_POST: {e}"
+
 
 def main():
     tweet, fuentes = build_tweet()
