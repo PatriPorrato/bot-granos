@@ -7,19 +7,28 @@ import tweepy
 # =========================
 # Config
 # =========================
-RET = {"soja": 0.33, "maiz": 0.12, "trigo": 0.12, "girasol": 0.07}
-DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bot-granos/1.0 (+github actions)"
+# Retenciones por defecto (editables con env vars del workflow si querés)
+RET = {
+    "soja":   float(os.getenv("RET_SOJA", "0.33")),
+    "maiz":   float(os.getenv("RET_MAIZ", "0.12")),
+    "trigo":  float(os.getenv("RET_TRIGO", "0.12")),
+    "girasol":float(os.getenv("RET_GIRASOL","0.07")),
 }
+
+# Mostrar estos TC (separados por coma). Soporta: oficial, mep, blue, ccl, mayorista, etc.
+SHOW_DOLLARS = [s.strip() for s in os.getenv("SHOW_DOLLARS", "oficial,mep").split(",") if s.strip()]
+
+# DRY_RUN=1 imprime el tweet y NO postea (úsalo en la primera corrida)
+DRY_RUN = os.getenv("DRY_RUN", "1") == "1"
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bot-granos/1.0 (+github actions)"}
 
 # =========================
 # Utils
 # =========================
 def gross_up(precio, ret):
     try:
-        return round(precio / (1 - ret), 0) if precio else None
+        return round(precio / (1 - ret), 0) if (precio is not None) else None
     except Exception:
         return None
 
@@ -27,13 +36,14 @@ def fmt_ars(v, dec=0):
     if v is None:
         return "S/C"
     s = f"{float(v):,.{dec}f}"
-    # 1.234.567,89 formato AR
+    # Formato AR: 1.234.567,89
     return "$" + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 def fmt_usd(v, dec=2):
     if v is None:
         return "S/C"
-    return f"USD{float(v):,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    s = f"{float(v):,.{dec}f}"
+    return "USD" + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 def get(url, timeout=25):
     r = requests.get(url, headers=HEADERS, timeout=timeout)
@@ -41,7 +51,7 @@ def get(url, timeout=25):
     return r
 
 # =========================
-# 1) Precios nacionales (BCR)
+# 1) Precios nacionales (BCR, ARS/t)
 # =========================
 def parse_ars(texto):
     # "$ 281.300,00" -> 281300.00
@@ -58,7 +68,6 @@ def precios_bcr():
     try:
         html = get(url).text
         soup = BeautifulSoup(html, "html.parser")
-        # Tomamos la primera tabla con filas relevantes
         for tr in soup.select("table tr"):
             tds = tr.find_all("td")
             if len(tds) < 2:
@@ -82,19 +91,18 @@ def precios_bcr():
 # =========================
 # 2) Chicago (USD/t) via Stooq (CSV)
 # =========================
-BU_TON = {"soja": 36.7437, "maiz": 39.3680, "trigo": 36.7437}
-SYMB   = {"soja": "zs.f",   "maiz": "zc.f",   "trigo": "zw.f"}
+BU_TON = {"soja": 36.7437, "maiz": 39.3680, "trigo": 36.7437}  # bu -> t
+SYMB   = {"soja": "zs.f",   "maiz": "zc.f",   "trigo": "zw.f"} # Stooq symbols
 
 def stooq_last_close(symbol):
     url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
     try:
         txt = get(url, timeout=30).text
-        reader = csv.DictReader(io.StringIO(txt))
-        rows = list(reader)
+        rows = list(csv.DictReader(io.StringIO(txt)))
         if not rows:
             return None, url
-        close_cents = float(rows[-1]["Close"])
-        return close_cents / 100.0, url  # USD/bu
+        close_cents = float(rows[-1]["Close"])  # ¢/bu
+        return close_cents / 100.0, url         # USD/bu
     except Exception as e:
         print(f"WARN_STOOQ_{symbol}: {e}")
         return None, url
@@ -105,7 +113,7 @@ def chicago_usd_ton():
         usd_bu, url = stooq_last_close(s)
         src[k] = url
         if usd_bu is not None:
-            out[k] = round(usd_bu * BU_TON[k], 2)
+            out[k] = round(usd_bu * BU_TON[k], 2)  # USD/t
     return out, src
 
 # =========================
@@ -125,12 +133,17 @@ def dolarapi(kind="oficial"):
 # Build tweet
 # =========================
 def build_tweet():
-    ar, src_bcr     = precios_bcr()
-    cb, src_cbot    = chicago_usd_ton()
-    fx_of, src_of   = dolarapi("oficial")
-    fx_mep, src_mep = dolarapi("mep")
+    ar, src_bcr   = precios_bcr()
+    cb, src_cbot  = chicago_usd_ton()
+    tc_vals, tc_srcs = [], {}
 
-    sin_ret = {k: gross_up(ar.get(k), RET[k]) for k in RET.keys()}
+    for k in SHOW_DOLLARS:
+        val, url = dolarapi(k)
+        tc_srcs[k] = url
+        label = {"oficial":"Oficial","mep":"MEP","blue":"Blue","ccl":"CCL"}.get(k, k.upper())
+        tc_vals.append(f"{label}: {fmt_ars(val, 2)}" if val is not None else f"{label}: S/C")
+
+    sin_ret = {k: gross_up(ar.get(k), RET[k]) for k in RET}
 
     linea_ar = []
     for nice, key in [("Soja","soja"), ("Maíz","maiz"), ("Girasol","girasol"), ("Trigo","trigo")]:
@@ -139,31 +152,20 @@ def build_tweet():
 
     linea_cbot = f"Soja: {fmt_usd(cb.get('soja'))} | Maíz: {fmt_usd(cb.get('maiz'))} | Trigo: {fmt_usd(cb.get('trigo'))}"
 
-    linea_tc = []
-    if fx_of is not None: linea_tc.append(f"Oficial: {fmt_ars(fx_of, 2)}")
-    if fx_mep is not None: linea_tc.append(f"MEP: {fmt_ars(fx_mep, 2)}")
-    if not linea_tc: linea_tc.append("TC: S/C")
-
     hoy = datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y")
-
     msg = (
         "📊 Precios 🇦🇷 y Chicago\n"
         f"• {' | '.join(linea_ar)}\n"
         "—\n"
         f"CBOT (USD/t): {linea_cbot}\n"
-        f"TC: {' | '.join(linea_tc)}\n"
+        f"TC: {' | '.join(tc_vals)}\n"
         f"({hoy}) #Agro #Granos #Soja #Maíz #Trigo #Girasol"
     )
 
-    # recorte defensivo
     if len(msg) > 280:
         msg = msg[:279] + "…"
 
-    fuentes = {
-        "BCR": src_bcr,
-        "CBOT": src_cbot,
-        "TC": {"oficial": src_of, "mep": src_mep}
-    }
+    fuentes = {"BCR": src_bcr, "CBOT": src_cbot, "TC": tc_srcs}
     return msg, fuentes
 
 # =========================
@@ -180,7 +182,7 @@ def post_to_x(text):
     }.items() if not v]
     if missing:
         print("ERROR_SECRETS_FALTAN:", ", ".join(missing))
-        return False, "Faltan secrets de X (ver Settings > Secrets > Actions)."
+        return False, "Faltan secrets de X (Settings > Secrets > Actions)."
 
     auth = tweepy.OAuth1UserHandler(key, secret, token, token_secret)
     api = tweepy.API(auth)
@@ -211,7 +213,6 @@ def main():
     ok, info = post_to_x(tweet)
     if not ok:
         print(info)
-        # Dejar trazas para depurar
         sys.exit(1)
     else:
         print("Publicado correctamente.")
