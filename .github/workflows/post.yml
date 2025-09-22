@@ -21,12 +21,24 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
 
-      - name: Run bot (preview primero si querés)
+      - name: Run bot (preview)
         env:
+          # ---- Credenciales X (poner en Settings > Secrets > Actions) ----
           X_API_KEY: ${{ secrets.X_API_KEY }}
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
-          DRY_RUN: "0"   # poné "1" si querés probar sin postear
+
+          # ---- Retenciones (opcional) ----
+          RET_SOJA: "0.33"
+          RET_MAIZ: "0.12"
+          RET_TRIGO: "0.12"
+          RET_GIRASOL: "0.07"
+
+          # ---- TC a mostrar ----
+          SHOW_DOLLARS: "oficial,mep"
+
+          # ---- Preview primero ----
+          DRY_RUN: "1"
         run: |
           python tweet_prices.py
