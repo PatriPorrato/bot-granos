@@ -1,4 +1,3 @@
 requests
-pandas
 beautifulsoup4
 tweepy
